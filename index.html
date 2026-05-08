@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PSR-E363 Mobile Test Rig</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f1115;
+    color: #e6e6e6;
+    padding: 16px;
+    min-height: 100vh;
+    line-height: 1.5;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 20px; }
+
+  .panel {
+    background: #1a1d24;
+    border: 1px solid #2a2e38;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .panel h2 {
+    font-size: 0.85rem;
+    margin-bottom: 10px;
+    color: #b8c0cc;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid #2a2e38;
+  }
+  .status-row:last-child { border-bottom: none; }
+  .status-label { color: #b8c0cc; font-size: 0.95rem; }
+  .status-value { font-weight: 600; }
+  .ok { color: #4ade80; }
+  .fail { color: #f87171; }
+  .pending { color: #fbbf24; }
+
+  button {
+    width: 100%;
+    padding: 16px;
+    background: #4f46e5;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 12px;
+  }
+  button:disabled { background: #2a2e38; color: #666; }
+  button:active:not(:disabled) { transform: scale(0.98); }
+
+  .toggle-row {
+    display: flex;
+    gap: 8px;
+  }
+  .toggle-row button { margin: 0; flex: 1; padding: 12px; font-size: 0.9rem; }
+  .toggle-row button.secondary {
+    background: #2a2e38;
+    color: #b8c0cc;
+  }
+  .toggle-row button.secondary.active {
+    background: #4f46e5;
+    color: white;
+  }
+
+  /* Piano */
+  .piano-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    background: #0a0c10;
+    border-radius: 6px;
+    padding: 8px;
+  }
+  .piano {
+    position: relative;
+    min-width: 560px;
+    height: 110px;
+  }
+  .key { position: absolute; transition: background 0.05s; }
+  .white-key {
+    bottom: 0; height: 100%;
+    width: calc(100% / 14);
+    background: #f5f5f5;
+    border: 1px solid #333;
+    border-radius: 0 0 4px 4px;
+    z-index: 1;
+  }
+  .white-key.active { background: #4ade80; }
+  .black-key {
+    top: 0; height: 65%;
+    width: calc(100% / 14 * 0.6);
+    background: #1a1d24;
+    border: 1px solid #000;
+    border-radius: 0 0 3px 3px;
+    z-index: 2;
+  }
+  .black-key.active { background: #fbbf24; }
+
+  /* Event log */
+  .log {
+    height: 160px;
+    overflow-y: auto;
+    background: #0a0c10;
+    border-radius: 6px;
+    padding: 8px;
+    font-family: 'SF Mono', Monaco, Consolas, monospace;
+    font-size: 0.75rem;
+  }
+  .log-entry { padding: 2px 4px; border-bottom: 1px solid #1a1d24; }
+  .log-entry.note-on { color: #4ade80; }
+  .log-entry.note-off { color: #888; }
+  .log-entry.system { color: #fbbf24; }
+  .log-entry.error { color: #f87171; }
+
+  details summary {
+    cursor: pointer;
+    color: #b8c0cc;
+    font-size: 0.85rem;
+    user-select: none;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  details[open] summary { margin-bottom: 8px; }
+  .info-block {
+    font-family: 'SF Mono', Monaco, Consolas, monospace;
+    font-size: 0.7rem;
+    color: #888;
+    word-break: break-all;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  .device-list { font-size: 0.85rem; color: #b8c0cc; }
+  .device-list .muted { color: #666; font-size: 0.75rem; }
+</style>
+</head>
+<body>
+
+<h1>PSR-E363 Mobile Test Rig</h1>
+<div class="subtitle">Web MIDI diagnostic for Android Chrome</div>
+
+<button id="connectBtn">Tap to Connect MIDI</button>
+
+<div class="panel">
+  <h2>Status</h2>
+  <div class="status-row">
+    <span class="status-label">Web MIDI API</span>
+    <span class="status-value pending" id="apiStatus">Checking…</span>
+  </div>
+  <div class="status-row">
+    <span class="status-label">MIDI Access</span>
+    <span class="status-value pending" id="accessStatus">Not requested</span>
+  </div>
+  <div class="status-row">
+    <span class="status-label">Devices Found</span>
+    <span class="status-value pending" id="deviceCount">0</span>
+  </div>
+  <div class="status-row">
+    <span class="status-label">Audio Output</span>
+    <span class="status-value pending" id="audioStatus">Not tested</span>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Connected Inputs</h2>
+  <div id="deviceList" class="device-list muted">No devices yet — plug in your keyboard, then tap Connect MIDI above.</div>
+</div>
+
+<div class="panel">
+  <h2>Live Visualizer</h2>
+  <div class="piano-wrap">
+    <div class="piano" id="piano"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Audio</h2>
+  <div class="toggle-row">
+    <button class="secondary active" id="audioToggle">Audio ON</button>
+    <button class="secondary" id="testTone">Play Test Tone</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Event Log</h2>
+  <div class="log" id="log">
+    <div class="log-entry system">Waiting for events…</div>
+  </div>
+</div>
+
+<div class="panel">
+  <details>
+    <summary>Diagnostic Info</summary>
+    <div class="info-block" id="diagInfo"></div>
+  </details>
+</div>
+
+<script>
+// State
+let audioCtx = null;
+let midiAccess = null;
+let audioEnabled = true;
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (el, text, cls) => {
+  el.textContent = text;
+  el.className = 'status-value ' + cls;
+};
+
+// Diagnostic info
+$('diagInfo').textContent = [
+  'User Agent: ' + navigator.userAgent,
+  'Platform: ' + (navigator.platform || 'unknown'),
+  'Language: ' + navigator.language,
+  'Has requestMIDIAccess: ' + (typeof navigator.requestMIDIAccess === 'function'),
+  'Has AudioContext: ' + (typeof (window.AudioContext || window.webkitAudioContext) === 'function'),
+  'Touch points: ' + (navigator.maxTouchPoints || 0),
+  'Online: ' + navigator.onLine
+].join('\n');
+
+// Initial API check
+if (typeof navigator.requestMIDIAccess === 'function') {
+  setStatus($('apiStatus'), 'Supported', 'ok');
+} else {
+  setStatus($('apiStatus'), 'NOT SUPPORTED', 'fail');
+  $('connectBtn').disabled = true;
+  $('connectBtn').textContent = 'Web MIDI not available on this browser';
+  log('Web MIDI API is not in this browser. If this is iOS, that is expected — try Chrome on Android.', 'error');
+}
+
+// Build mini piano: 2 octaves C3–B4 (MIDI 48–71)
+const piano = $('piano');
+const startMidi = 48;
+const whiteOffsets = [0, 2, 4, 5, 7, 9, 11];
+const blackPositions = [0, 1, 3, 4, 5]; // after which white keys (within an octave)
+const blackOffsetsByPos = { 0: 1, 1: 3, 3: 6, 4: 8, 5: 10 };
+
+let whiteIndex = 0;
+for (let octave = 0; octave < 2; octave++) {
+  for (let i = 0; i < 7; i++) {
+    const wk = document.createElement('div');
+    wk.className = 'white-key key';
+    wk.style.left = `calc(100% / 14 * ${whiteIndex})`;
+    const midiNote = startMidi + octave * 12 + whiteOffsets[i];
+    wk.id = `key-${midiNote}`;
+    piano.appendChild(wk);
+
+    if (blackPositions.includes(i)) {
+      const bk = document.createElement('div');
+      bk.className = 'black-key key';
+      bk.style.left = `calc(100% / 14 * ${whiteIndex} + 100% / 14 * 0.7)`;
+      const blackMidi = startMidi + octave * 12 + blackOffsetsByPos[i];
+      bk.id = `key-${blackMidi}`;
+      piano.appendChild(bk);
+    }
+    whiteIndex++;
+  }
+}
+
+// Logging
+function log(msg, type = 'system') {
+  const entry = document.createElement('div');
+  entry.className = 'log-entry ' + type;
+  const time = new Date().toLocaleTimeString();
+  entry.textContent = `[${time}] ${msg}`;
+  const logEl = $('log');
+  logEl.insertBefore(entry, logEl.firstChild);
+  while (logEl.children.length > 30) {
+    logEl.removeChild(logEl.lastChild);
+  }
+}
+
+// Audio (simple triangle wave with envelope — just enough to confirm output works)
+function ensureAudio() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) {
+      setStatus($('audioStatus'), 'Not supported', 'fail');
+      return null;
+    }
+    audioCtx = new Ctx();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function midiToFreq(note) {
+  return 440 * Math.pow(2, (note - 69) / 12);
+}
+
+function playNote(midiNote, velocity = 100) {
+  if (!audioEnabled) return;
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.value = midiToFreq(midiNote);
+  const gain = ctx.createGain();
+  const v = (velocity / 127) * 0.3;
+  gain.gain.setValueAtTime(0, ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(v, ctx.currentTime + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.2);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + 1.3);
+  setStatus($('audioStatus'), 'Working', 'ok');
+}
+
+// MIDI
+async function connectMIDI() {
+  try {
+    log('Requesting MIDI access…');
+    midiAccess = await navigator.requestMIDIAccess({ sysex: false });
+    setStatus($('accessStatus'), 'Granted', 'ok');
+    log('MIDI access granted.');
+    refreshDevices();
+    midiAccess.onstatechange = (e) => {
+      log(`Device ${e.port.state}: ${e.port.name || 'unnamed'}`);
+      refreshDevices();
+    };
+    $('connectBtn').textContent = 'Connected — press a key on your keyboard';
+    $('connectBtn').disabled = true;
+    ensureAudio();
+  } catch (err) {
+    setStatus($('accessStatus'), 'Denied', 'fail');
+    log('Error: ' + err.message, 'error');
+  }
+}
+
+function refreshDevices() {
+  if (!midiAccess) return;
+  const inputs = Array.from(midiAccess.inputs.values());
+  $('deviceCount').textContent = inputs.length;
+  $('deviceCount').className = 'status-value ' + (inputs.length > 0 ? 'ok' : 'fail');
+  if (inputs.length === 0) {
+    $('deviceList').innerHTML = '<span class="muted">No MIDI inputs detected. Make sure the keyboard is powered on and the USB-OTG adapter is connected.</span>';
+  } else {
+    $('deviceList').innerHTML = inputs.map(inp =>
+      `<div>• <strong>${inp.name || 'Unnamed device'}</strong> <span class="muted">(${inp.manufacturer || 'unknown manufacturer'})</span></div>`
+    ).join('');
+  }
+  inputs.forEach(inp => { inp.onmidimessage = handleMessage; });
+}
+
+function handleMessage(msg) {
+  const [status, data1, data2] = msg.data;
+  const cmd = status & 0xF0;
+  const channel = (status & 0x0F) + 1;
+  if (cmd === 0x90 && data2 > 0) {
+    log(`NOTE ON   ch${channel}  note ${data1}  vel ${data2}`, 'note-on');
+    highlightKey(data1, true);
+    playNote(data1, data2);
+  } else if (cmd === 0x80 || (cmd === 0x90 && data2 === 0)) {
+    log(`NOTE OFF  ch${channel}  note ${data1}`, 'note-off');
+    highlightKey(data1, false);
+  } else {
+    log(`MSG 0x${status.toString(16)}  ${data1} ${data2}`);
+  }
+}
+
+function highlightKey(midiNote, on) {
+  const el = document.getElementById(`key-${midiNote}`);
+  if (el) el.classList.toggle('active', on);
+}
+
+// Events
+$('connectBtn').addEventListener('click', connectMIDI);
+$('audioToggle').addEventListener('click', () => {
+  audioEnabled = !audioEnabled;
+  $('audioToggle').classList.toggle('active', audioEnabled);
+  $('audioToggle').textContent = audioEnabled ? 'Audio ON' : 'Audio OFF';
+});
+$('testTone').addEventListener('click', () => {
+  ensureAudio();
+  playNote(60, 100);
+  log('Played test tone (Middle C / Do)');
+});
+</script>
+</body>
+</html>
