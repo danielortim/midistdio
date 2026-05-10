@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+V<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -98,6 +98,23 @@ input[type=range]{width:90px;accent-color:var(--acc);}input[type=color]{width:28
 .mo{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:2000;display:none;justify-content:center;align-items:center;padding:20px;}.mo.open{display:flex;}
 .mdl{background:var(--bg2);border:1px solid var(--bdr);border-radius:12px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;padding:24px;}.mdl h2{color:var(--acc);font-size:1.1rem;margin-bottom:12px;}.mdl h3{color:var(--txt);font-size:0.85rem;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--bdr);}.mdl p{color:var(--txd);font-size:0.78rem;line-height:1.5;margin-bottom:6px;}
 .mc{float:right;background:var(--bg4);border:1px solid var(--bdr);color:var(--txt);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:0.85rem;display:flex;align-items:center;justify-content:center;}.mc:hover{background:var(--accd);color:white;}
+
+/* Channel mixer + pentagrams */
+.chmx-h{font-size:0.65rem;color:var(--txm);text-transform:uppercase;letter-spacing:0.8px;font-weight:600;width:100%;display:block;margin:8px 0 4px;}
+#chMixer{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 4px;}
+.chmx{display:flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:4px 8px;cursor:pointer;font-size:0.7rem;font-family:var(--fm);user-select:none;transition:all 0.15s;}
+.chmx.muted{opacity:0.4;background:var(--bg4);}
+.chmx:hover{border-color:var(--acc);}
+.chmx .chsw{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+.chmx .chnt{color:var(--txd);font-size:0.62rem;}
+#pentagrams{display:flex;flex-direction:column;gap:5px;margin:4px 0;}
+.pent{background:var(--bg3);border:1px solid var(--bdr);border-radius:7px;padding:5px;display:flex;align-items:center;gap:8px;}
+.pent.muted{opacity:0.35;}
+.pent .plbl{font-family:var(--fm);font-size:0.58rem;color:var(--txm);width:54px;flex-shrink:0;text-align:center;line-height:1.3;}
+.pent .plbl b{display:block;color:var(--txt);font-size:0.72rem;}
+.pent .pview{flex:1;height:80px;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;overflow:hidden;position:relative;}
+.pent .pview svg{display:block;position:absolute;top:0;left:25%;will-change:transform;}
+.pent .phead{position:absolute;top:0;bottom:0;width:1px;background:var(--acc);box-shadow:0 0 5px var(--acc);left:25%;z-index:2;pointer-events:none;}
 </style>
 </head>
 <body>
@@ -111,10 +128,11 @@ input[type=range]{width:90px;accent-color:var(--acc);}input[type=color]{width:28
 </div>
 <div id="files-panel" class="panel">
   <div class="fdrop" id="dropZone" onclick="document.getElementById('mfi').click()" ondragover="event.preventDefault();this.classList.add('dg')" ondragleave="this.classList.remove('dg')" ondrop="handleDrop(event)"><input type="file" id="mfi" accept=".mid,.midi" onchange="loadMF(this.files[0])"><div style="font-size:1.5rem;margin-bottom:4px">🎵</div><div style="font-weight:600" id="lDrop">Drop a .mid file or click to browse</div></div>
-  <div class="mp" id="midiPlayer"><h3 id="mfn">—</h3><div id="midiStats"></div><div id="trackAssign"></div>
-    <div class="hc"><button class="hb a" id="hBoth" onclick="setHF('both')">Both</button><button class="hb" id="hRight" onclick="setHF('right')"><span id="lRH">Right Hand</span></button><button class="hb l" id="hLeft" onclick="setHF('left')"><span id="lLH">Left Hand</span></button></div>
+  <div class="mp" id="midiPlayer"><h3 id="mfn">—</h3><div id="midiStats"></div>
     <div class="pb"><button class="btn bg" onclick="playMF()">▶</button><button class="btn bs" onclick="stopMF()">⏹</button><div class="pw"><div class="pf" id="pf"></div></div><span class="pt" id="ptime">0:00 / 0:00</span><div class="tw"><label>Tempo</label><input type="range" id="tempoSlider" min="25" max="200" value="100"><span id="tempoVal">100%</span></div></div>
-    <div class="kb-outer" style="margin-top:8px;"><div class="nav-arrow left" onclick="scrollKb('fKb',-1)">‹</div><div class="nav-arrow right" onclick="scrollKb('fKb',1)">›</div><div class="kb-scroll"><div class="piano sm" id="fKb"></div></div></div>
+    <div class="kb-outer" style="margin-top:8px;"><div class="nav-arrow left" onclick="scrollKb('fKb',-1)">‹</div><div class="nav-arrow right" onclick="scrollKb('fKb',1)">›</div><div class="kb-scroll"><div class="piano" id="fKb"></div></div></div>
+    <span class="chmx-h" id="lChH">Channels — click to mute</span><div id="chMixer"></div>
+    <div id="pentagrams"></div>
     <div class="lb" style="max-height:100px;margin-top:6px;"><div class="lh2"><span id="lML">Playback Log</span></div><div class="lc" id="fLog"></div></div>
   </div>
 </div>
@@ -167,6 +185,9 @@ let nc={...DCOL};
 let midiAccess=null,inputs=[],outputs=[],activeNotes=new Set();
 let recording=false,recPaused=false,recStart=0,recPauseTime=0,recPauseTotal=0,recEvents=[],recTimerI=null,pbTOs=[];
 let parsedMidi=null,mfTOs=[],mfStart=0,mfDur=0,mfProgI=null,hf='both',thm={};
+let chData={},chMute={},pentRAF=null,activeChNotes={},mfTs=1;
+const PENT_PXMS=0.08;
+const CH_COLORS=['#c084fc','#60a5fa','#34d399','#fbbf24','#f87171','#fb923c','#f472b6','#a78bfa','#10b981','#06b6d4','#8b5cf6','#ec4899','#22c55e','#eab308','#ef4444','#3b82f6'];
 
 // ═══ AUDIO — self-contained physical modeling piano ═══
 let audioCtx=null,masterGain=null,convolver=null,dryGain=null,wetGain=null,sNodes={};
