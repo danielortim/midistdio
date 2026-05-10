@@ -435,26 +435,76 @@ function loadFiles(files){
   if(!files||!files.length)return;
   let midFile=null;const audioFiles=[];
   for(const f of files){const n=f.name.toLowerCase();if(n.endsWith('.mid')||n.endsWith('.midi'))midFile=f;else if(n.endsWith('.wav')||n.endsWith('.mp3')||n.endsWith('.ogg')||n.endsWith('.m4a'))audioFiles.push(f);}
-  // Reset existing stems
-  Object.values(stems).forEach(s=>{try{s.audio.pause();}catch(e){}});
-  stems={};stemOrder=[];
+  // If we got exactly one audio file (no MIDI, no other audio) AND we're served
+  // from a backend, send it for stem separation. Otherwise treat the audio
+  // files as already-separated stems (filename-based detection).
+  const isLocalServer=location.protocol==='http:'||location.protocol==='https:';
+  if(audioFiles.length===1&&!midFile&&isLocalServer){
+    separateAudio(audioFiles[0]);return;
+  }
+  // Direct load path: stems pre-named (vocals.wav etc.) and/or a MIDI
+  resetStems();
   for(const f of audioFiles){
     const base=f.name.toLowerCase().replace(/\.[^.]+$/,'');
     let name=base;
     for(const k of STEM_ORDER){if(base.includes(k)){name=k;break;}}
-    if(stems[name])name=base;  // de-dupe
+    if(stems[name])name=base;
     const url=URL.createObjectURL(f);
-    const audio=new Audio(url);audio.preload='auto';audio.volume=1;
-    stems[name]={audio,vol:1,mute:false,solo:false};
-    stemOrder.push(name);
+    addStem(name,url);
   }
-  // Sort stems by canonical order
+  finalizeStemLoad((audioFiles[0]||midFile).name);
+  if(midFile)loadMF(midFile);
+}
+function resetStems(){
+  Object.values(stems).forEach(s=>{try{s.audio.pause();}catch(e){}});
+  stems={};stemOrder=[];
+}
+function addStem(name,url){
+  const audio=new Audio(url);audio.preload='auto';audio.volume=1;
+  stems[name]={audio,vol:1,mute:false,solo:false};
+  stemOrder.push(name);
+}
+function finalizeStemLoad(displayName){
   stemOrder.sort((a,b)=>{const ia=STEM_ORDER.indexOf(a),ib=STEM_ORDER.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib);});
+  // The "original" track defaults to muted so the stems play (otherwise double-volume).
+  if(stems['original']){stems['original'].mute=true;}
   buildStemMixer();
-  if(midFile){loadMF(midFile);}else if(stemOrder.length){
+  if(stemOrder.length){
     document.getElementById('midiPlayer').classList.add('vis');
-    document.getElementById('mfn').textContent='🎵 '+(audioFiles[0].name.split(/[\/\\]/).pop());
-    document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Stems</span><span>${stemOrder.length}</span></div>`;
+    document.getElementById('mfn').textContent='🎵 '+displayName;
+    if(!parsedMidi)document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Stems</span><span>${stemOrder.length}</span></div>`;
+  }
+}
+async function separateAudio(file){
+  resetStems();
+  document.getElementById('midiPlayer').classList.add('vis');
+  document.getElementById('mfn').textContent='🎵 '+file.name;
+  document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Status</span><span id="sepSt">Uploading…</span></div><div class="ms"><span>Progress</span><span id="sepPct">0%</span></div>`;
+  addLog(`Uploading ${file.name} to /separate`,'inf');
+  try{
+    const fd=new FormData();fd.append('audio',file);
+    const r=await fetch('/separate',{method:'POST',body:fd});
+    if(!r.ok){throw new Error('upload failed: '+r.status);}
+    const j=await r.json();
+    document.getElementById('sepSt').textContent=j.cached?'Loading cached stems…':'Separating…';
+    // Poll status
+    while(true){
+      await new Promise(res=>setTimeout(res,j.cached?100:1500));
+      const sr=await fetch('/status/'+j.song_id);
+      if(!sr.ok)throw new Error('status failed');
+      const s=await sr.json();
+      const pctEl=document.getElementById('sepPct');if(pctEl)pctEl.textContent=(s.progress||0)+'%';
+      if(s.status==='done'){
+        addLog(`Got ${Object.keys(s.stems).length} stems`,'inf');
+        Object.entries(s.stems).forEach(([name,url])=>addStem(name,url));
+        finalizeStemLoad(file.name);
+        return;
+      }
+      if(s.status==='error'){throw new Error(s.error||'separation failed');}
+    }
+  }catch(e){
+    addLog('Separation error: '+e.message,'warn');
+    document.getElementById('midiStats').innerHTML=`<div class="ms" style="color:var(--red)"><span>Error</span><span>${e.message}</span></div><div style="font-size:0.65rem;color:var(--txm);margin-top:6px;">Make sure server.py is running:<br><code>venv\\Scripts\\python.exe server.py</code></div>`;
   }
 }
 function loadMF(file){if(!file)return;const r=new FileReader();r.onload=e=>{parsedMidi=parseMFile(new Uint8Array(e.target.result));if(parsedMidi)showMidi(file.name);};r.readAsArrayBuffer(file);}
