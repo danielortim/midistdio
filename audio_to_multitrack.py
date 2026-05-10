@@ -114,6 +114,23 @@ TRACK_NAMES = {
     "drums":  "Drums (raw)",
 }
 
+# Distinct MIDI channel per stem so the player can mute them independently.
+# Channel 9 is the General-MIDI drum channel.
+CHANNEL_MAP = {
+    "vocals": 0,
+    "bass":   1,
+    "other":  2,
+    "drums":  9,
+}
+
+# General-MIDI program numbers — gives each channel a different default voice.
+PROGRAM_MAP = {
+    "vocals": 53,  # Voice Oohs
+    "bass":   33,  # Electric Bass (finger)
+    "other":  0,   # Acoustic Grand Piano
+    "drums":  0,   # ignored on channel 9
+}
+
 
 def merge_tracks(stem_midis: dict, output_path: Path) -> Path:
     """Combine each stem's single-track MIDI into one multi-track MIDI."""
@@ -129,17 +146,22 @@ def merge_tracks(stem_midis: dict, output_path: Path) -> Path:
     meta_track.append(mido.MetaMessage("end_of_track", time=0))
     merged.tracks.append(meta_track)
 
-    # One track per stem, named so your HTML player auto-detects it.
+    # One track per stem, on its own MIDI channel.
     for stem_name, midi_path in stem_midis.items():
+        ch = CHANNEL_MAP[stem_name]
         new_track = mido.MidiTrack()
         new_track.append(
             mido.MetaMessage("track_name", name=TRACK_NAMES[stem_name], time=0)
+        )
+        new_track.append(
+            mido.Message("program_change", channel=ch,
+                         program=PROGRAM_MAP[stem_name], time=0)
         )
         src_midi = mido.MidiFile(midi_path)
         for src_track in src_midi.tracks:
             for msg in src_track:
                 if msg.type in ("note_on", "note_off"):
-                    new_track.append(msg.copy())
+                    new_track.append(msg.copy(channel=ch))
         new_track.append(mido.MetaMessage("end_of_track", time=0))
         merged.tracks.append(new_track)
 
