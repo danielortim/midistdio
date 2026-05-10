@@ -204,59 +204,90 @@ def _find_original(song_id: str) -> Path | None:
 
 
 def _run_transcribe(song_id: str, audio_path: Path) -> None:
-    """Re-uses the chunked YourMT3+ pipeline from transcribe.py."""
+    """Local, offline transcription:
+       - Reuse the Demucs stems already cached for this song_id
+       - Run Basic Pitch on each pitched stem (skip drums)
+       - Merge into a multi-track MIDI, one track per stem
+       - Rechannel so each track gets its own MIDI channel
+    No HuggingFace, no quotas. Quality is lower than YourMT3+ but it works
+    fully offline."""
     try:
         with _trx_lock:
-            _trx_jobs[song_id] = {"status": "running", "progress": 5,
-                                  "detail": "Connecting", "error": None}
-        token = os.environ.get("HF_TOKEN")
-        if not token:
-            raise RuntimeError("HF_TOKEN env var is not set; "
-                               "transcription needs a HuggingFace token.")
-        # Lazy import so server starts fast and Flask doesn't pull in librosa et al.
-        import librosa, soundfile as sf, mido
-        from gradio_client import Client, handle_file
-        import transcribe as trx
+            _trx_jobs[song_id] = {"status": "running", "progress": 2,
+                                  "detail": "Loading basic-pitch", "error": None}
+        # Lazy import so server starts fast and tensorflow only loads on demand.
+        import mido
+        from basic_pitch import ICASSP_2022_MODEL_PATH
+        from basic_pitch.inference import predict_and_save
         import rechannel
 
-        out_mid = CACHE / song_id / "transcription.mid"
-        chunk_sec = 60.0
+        job_dir = CACHE / song_id
+        stem_files = []
+        for name in ("vocals", "bass", "other"):
+            p = job_dir / f"{name}.wav"
+            if p.exists():
+                stem_files.append((name, p))
+        if not stem_files:
+            # Fall back to the original audio as a single track
+            stem_files.append(("mix", audio_path))
 
-        with tempfile.TemporaryDirectory(prefix="trx_") as work:
+        with tempfile.TemporaryDirectory(prefix="bp_") as work:
             work = Path(work)
-            with _trx_lock:
-                _trx_jobs[song_id]["detail"] = "Chunking audio"
-            chunks_paths = trx.chunk_audio(audio_path, chunk_sec, work / "chunks")
-            with _trx_lock:
-                _trx_jobs[song_id]["detail"] = f"{len(chunks_paths)} chunks queued"
-
-            with _trx_lock:
-                _trx_jobs[song_id]["progress"] = 8
-            client = Client(trx.SPACE, token=token)
-
-            all_chunks: list[tuple[float, mido.MidiFile]] = []
-            n = len(chunks_paths)
-            for i, wav in enumerate(chunks_paths):
-                start = i * chunk_sec
+            n = len(stem_files)
+            stem_midis: dict[str, Path] = {}
+            for i, (name, src) in enumerate(stem_files):
                 with _trx_lock:
-                    _trx_jobs[song_id]["progress"] = 10 + int(80 * i / max(1, n))
-                    _trx_jobs[song_id]["detail"] = f"Chunk {i+1}/{n}"
-                try:
-                    mid = trx.transcribe_chunk(client, wav)
-                    all_chunks.append((start, mid))
-                except Exception as e:
-                    with _trx_lock:
-                        _trx_jobs[song_id]["detail"] = f"chunk {i+1} failed: {e}"
+                    _trx_jobs[song_id]["progress"] = 5 + int(80 * i / n)
+                    _trx_jobs[song_id]["detail"] = f"Transcribing {name} ({i+1}/{n})"
+                stem_out = work / name
+                stem_out.mkdir()
+                predict_and_save(
+                    audio_path_list=[str(src)],
+                    output_directory=str(stem_out),
+                    save_midi=True,
+                    sonify_midi=False,
+                    save_model_outputs=False,
+                    save_notes=False,
+                    model_or_model_path=ICASSP_2022_MODEL_PATH,
+                )
+                produced = next(stem_out.glob("*_basic_pitch.mid"), None)
+                if produced:
+                    stem_midis[name] = produced
 
-            if not all_chunks:
-                raise RuntimeError("All chunks failed to transcribe")
+            if not stem_midis:
+                raise RuntimeError("Basic Pitch produced no MIDI for any stem")
 
-            raw = CACHE / song_id / "_raw.mid"
+            # Merge stems into one multitrack MIDI
             with _trx_lock:
-                _trx_jobs[song_id]["detail"] = "Merging"; _trx_jobs[song_id]["progress"] = 92
-            trx.merge_chunks(all_chunks, raw)
+                _trx_jobs[song_id]["progress"] = 90
+                _trx_jobs[song_id]["detail"] = "Merging tracks"
+            first = mido.MidiFile(next(iter(stem_midis.values())))
+            merged = mido.MidiFile(ticks_per_beat=first.ticks_per_beat)
+            meta = mido.MidiTrack()
+            meta.append(mido.MetaMessage("track_name", name="Meta", time=0))
+            for msg in first.tracks[0]:
+                if msg.is_meta and msg.type != "end_of_track":
+                    meta.append(msg.copy())
+            meta.append(mido.MetaMessage("end_of_track", time=0))
+            merged.tracks.append(meta)
+            for name, mid_path in stem_midis.items():
+                track = mido.MidiTrack()
+                track.append(mido.MetaMessage("track_name",
+                                               name=name.capitalize(), time=0))
+                src_mid = mido.MidiFile(mid_path)
+                for src_track in src_mid.tracks:
+                    for msg in src_track:
+                        if msg.type in ("note_on", "note_off"):
+                            track.append(msg.copy())
+                track.append(mido.MetaMessage("end_of_track", time=0))
+                merged.tracks.append(track)
+
+            raw = job_dir / "_raw.mid"
+            merged.save(raw)
             with _trx_lock:
-                _trx_jobs[song_id]["detail"] = "Rechanneling"; _trx_jobs[song_id]["progress"] = 96
+                _trx_jobs[song_id]["progress"] = 96
+                _trx_jobs[song_id]["detail"] = "Rechanneling"
+            out_mid = job_dir / "transcription.mid"
             rechannel.rechannel(raw, out_mid)
             try: raw.unlink()
             except Exception: pass
