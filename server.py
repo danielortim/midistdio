@@ -61,55 +61,80 @@ def _hash_file(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def _run_one_demucs(song_id: str, src_audio: Path, model: str,
+                    out_dir: Path, pct_offset: int, pct_span: int) -> Path:
+    """Run a single demucs model and return the path to its stem directory.
+    Reports progress in [pct_offset, pct_offset+pct_span]."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "demucs",
+           "-o", str(out_dir), "-n", model, str(src_audio)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        line = line.strip()
+        if "%" in line:
+            try:
+                pct = int(line.split("%")[0].split()[-1])
+                scaled = pct_offset + int(pct_span * pct / 100)
+                with _jobs_lock:
+                    _jobs[song_id]["progress"] = max(5, min(98, scaled))
+            except (ValueError, IndexError):
+                pass
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"demucs {model} exited {proc.returncode}")
+    return out_dir / model / src_audio.stem
+
+
 def _run_demucs(song_id: str, src_audio: Path) -> None:
+    """Run BOTH htdemucs (4-stem, clean) and htdemucs_6s (for piano/guitar),
+    then take the best stems from each."""
     job_dir = CACHE / song_id
     try:
         with _jobs_lock:
-            _jobs[song_id] = {"status": "running", "progress": 5, "stems": {},
-                              "error": None, "name": src_audio.name}
-        # demucs writes to <out>/htdemucs/<stem>/<wav>
-        out = job_dir / "_work"
-        out.mkdir(parents=True, exist_ok=True)
-        cmd = [sys.executable, "-m", "demucs",
-               "-o", str(out), "-n", "htdemucs_6s", str(src_audio)]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
-        # Poll demucs output for progress %, scan for "%" lines
-        for line in proc.stdout:
-            line = line.strip()
-            if "%" in line:
-                # demucs prints lines like "  37%|███... | ..."
-                try:
-                    pct = int(line.split("%")[0].split()[-1])
-                    with _jobs_lock:
-                        _jobs[song_id]["progress"] = max(5, min(95, pct))
-                except (ValueError, IndexError):
-                    pass
-        proc.wait()
-        if proc.returncode != 0:
-            raise RuntimeError(f"demucs exited {proc.returncode}")
+            _jobs[song_id] = {"status": "running", "progress": 3, "stems": {},
+                              "error": None, "name": src_audio.name,
+                              "stage": "Separating vocals/drums/bass/other"}
+        work = job_dir / "_work"
+        work.mkdir(parents=True, exist_ok=True)
 
-        stem_src = out / "htdemucs_6s" / src_audio.stem
+        # Pass 1: 4-stem htdemucs (gives clean vocals/drums/bass/other)
+        stem_src_4 = _run_one_demucs(song_id, src_audio, "htdemucs",
+                                     work, pct_offset=3, pct_span=47)
+
+        # Pass 2: 6-stem htdemucs_6s (we only keep piano + guitar from this)
+        with _jobs_lock:
+            _jobs[song_id]["stage"] = "Separating piano/guitar"
+        stem_src_6 = _run_one_demucs(song_id, src_audio, "htdemucs_6s",
+                                     work, pct_offset=50, pct_span=48)
+
         stems = {}
-        for name in ("vocals", "drums", "bass", "other", "piano", "guitar"):
-            p = stem_src / f"{name}.wav"
+        # Take 4 from 4-stem
+        for name in ("vocals", "drums", "bass", "other"):
+            p = stem_src_4 / f"{name}.wav"
+            if p.exists():
+                dest = job_dir / f"{name}.wav"
+                shutil.move(str(p), str(dest))
+                stems[name] = f"/stems/{song_id}/{name}.wav"
+        # Take piano + guitar from 6-stem
+        for name in ("piano", "guitar"):
+            p = stem_src_6 / f"{name}.wav"
             if p.exists():
                 dest = job_dir / f"{name}.wav"
                 shutil.move(str(p), str(dest))
                 stems[name] = f"/stems/{song_id}/{name}.wav"
 
-        # Keep the original audio next to the stems for reference playback
         orig_dest = job_dir / f"original{src_audio.suffix}"
         shutil.copy(src_audio, orig_dest)
         stems["original"] = f"/stems/{song_id}/{orig_dest.name}"
 
-        # Cleanup the demucs work dir
-        shutil.rmtree(out, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
 
         with _jobs_lock:
             _jobs[song_id]["status"] = "done"
             _jobs[song_id]["progress"] = 100
             _jobs[song_id]["stems"] = stems
+            _jobs[song_id]["stage"] = "Ready"
     except Exception as e:
         with _jobs_lock:
             _jobs[song_id] = {"status": "error", "progress": 0, "stems": {},
@@ -145,32 +170,25 @@ def separate():
     song_id = _hash_file(tmp_path)
     job_dir = CACHE / song_id
 
-    # Cache hit: stems already exist (and are from the current 6-stem model)
+    # Cache hit: full 6-stem set must be present (otherwise re-run both models).
     if job_dir.exists():
-        has_piano = (job_dir / "piano.wav").exists()
-        has_guitar = (job_dir / "guitar.wav").exists()
-        has_4stem = any((job_dir / f"{n}.wav").exists()
-                        for n in ("vocals", "drums", "bass", "other"))
-        # If we have only old 4-stem stems and no piano/guitar → invalidate
-        if has_4stem and not (has_piano or has_guitar):
-            for f in list(job_dir.glob("*.wav")):
-                if not f.stem.startswith("original"):
-                    f.unlink(missing_ok=True)
-        else:
-            cached = {}
-            for name in ("vocals", "drums", "bass", "other", "piano", "guitar"):
-                if (job_dir / f"{name}.wav").exists():
-                    cached[name] = f"/stems/{song_id}/{name}.wav"
+        required = ("vocals", "drums", "bass", "other", "piano", "guitar")
+        has_all = all((job_dir / f"{n}.wav").exists() for n in required)
+        if has_all:
+            cached = {n: f"/stems/{song_id}/{n}.wav" for n in required}
             for orig in job_dir.glob("original.*"):
                 cached["original"] = f"/stems/{song_id}/{orig.name}"
                 break
-            if cached:
-                tmp_path.unlink(missing_ok=True)
-                with _jobs_lock:
-                    _jobs[song_id] = {"status": "done", "progress": 100,
-                                      "stems": cached, "error": None,
-                                      "name": f.filename, "cached": True}
-                return jsonify({"song_id": song_id, "cached": True})
+            tmp_path.unlink(missing_ok=True)
+            with _jobs_lock:
+                _jobs[song_id] = {"status": "done", "progress": 100,
+                                  "stems": cached, "error": None,
+                                  "name": f.filename, "cached": True}
+            return jsonify({"song_id": song_id, "cached": True})
+        # Partial / old cache → wipe stems but keep original audio
+        for f2 in list(job_dir.glob("*.wav")):
+            if not f2.stem.startswith("original"):
+                f2.unlink(missing_ok=True)
 
     # Move upload into the job dir so we can clean up the work dir later
     job_dir.mkdir(parents=True, exist_ok=True)
