@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(venv/Scripts/python.exe rechannel.py \"midi_output/Mac Miller_ NPR Music Tiny Desk Concert_multitrack_orig.mid\")"
     ]
   }
 }
