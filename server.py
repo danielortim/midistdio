@@ -145,22 +145,32 @@ def separate():
     song_id = _hash_file(tmp_path)
     job_dir = CACHE / song_id
 
-    # Cache hit: stems already exist
+    # Cache hit: stems already exist (and are from the current 6-stem model)
     if job_dir.exists():
-        cached = {}
-        for name in ("vocals", "drums", "bass", "other", "piano", "guitar"):
-            if (job_dir / f"{name}.wav").exists():
-                cached[name] = f"/stems/{song_id}/{name}.wav"
-        for orig in job_dir.glob("original.*"):
-            cached["original"] = f"/stems/{song_id}/{orig.name}"
-            break
-        if cached:
-            tmp_path.unlink(missing_ok=True)
-            with _jobs_lock:
-                _jobs[song_id] = {"status": "done", "progress": 100,
-                                  "stems": cached, "error": None,
-                                  "name": f.filename, "cached": True}
-            return jsonify({"song_id": song_id, "cached": True})
+        has_piano = (job_dir / "piano.wav").exists()
+        has_guitar = (job_dir / "guitar.wav").exists()
+        has_4stem = any((job_dir / f"{n}.wav").exists()
+                        for n in ("vocals", "drums", "bass", "other"))
+        # If we have only old 4-stem stems and no piano/guitar → invalidate
+        if has_4stem and not (has_piano or has_guitar):
+            for f in list(job_dir.glob("*.wav")):
+                if not f.stem.startswith("original"):
+                    f.unlink(missing_ok=True)
+        else:
+            cached = {}
+            for name in ("vocals", "drums", "bass", "other", "piano", "guitar"):
+                if (job_dir / f"{name}.wav").exists():
+                    cached[name] = f"/stems/{song_id}/{name}.wav"
+            for orig in job_dir.glob("original.*"):
+                cached["original"] = f"/stems/{song_id}/{orig.name}"
+                break
+            if cached:
+                tmp_path.unlink(missing_ok=True)
+                with _jobs_lock:
+                    _jobs[song_id] = {"status": "done", "progress": 100,
+                                      "stems": cached, "error": None,
+                                      "name": f.filename, "cached": True}
+                return jsonify({"song_id": song_id, "cached": True})
 
     # Move upload into the job dir so we can clean up the work dir later
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -344,3 +354,4 @@ def status_transcribe(song_id: str):
 if __name__ == "__main__":
     print(" * Open http://localhost:8000/ in Chrome")
     app.run(host="127.0.0.1", port=8000, threaded=True, debug=False)
+
