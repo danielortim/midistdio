@@ -71,7 +71,7 @@ def _run_demucs(song_id: str, src_audio: Path) -> None:
         out = job_dir / "_work"
         out.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-m", "demucs",
-               "-o", str(out), "-n", "htdemucs", str(src_audio)]
+               "-o", str(out), "-n", "htdemucs_6s", str(src_audio)]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True)
         # Poll demucs output for progress %, scan for "%" lines
