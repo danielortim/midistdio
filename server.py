@@ -30,6 +30,14 @@ import threading
 import time
 from pathlib import Path
 
+# Windows: force UTF-8 stdout/stderr so libraries that print emoji
+# (basic_pitch, demucs progress bars) don't crash on cp1252.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 ROOT = Path(__file__).parent
