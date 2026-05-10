@@ -5,6 +5,7 @@ V<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Daniel Ortiz - MIDI - No compartir</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.58,npm/@magenta/music@1.23.1/es6/core.js,npm/focus-visible@5,npm/html-midi-player@1.5.0"></script>
 <style>
 :root{--bg:#08080c;--bg2:#101018;--bg3:#16161f;--bg4:#1c1c28;--bdr:#2a2a3a;--acc:#c084fc;--accd:#7c3aed;--grn:#34d399;--grnd:#065f46;--red:#f87171;--redd:#7f1d1d;--blu:#60a5fa;--org:#fb923c;--txt:#e2e8f0;--txd:#64748b;--txm:#475569;--fd:'Outfit',sans-serif;--fm:'JetBrains Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}body{background:var(--bg);color:var(--txt);font-family:var(--fd);height:100vh;display:flex;flex-direction:column;overflow:hidden;}
@@ -145,6 +146,8 @@ input[type=range]{width:90px;accent-color:var(--acc);}input[type=color]{width:28
   <div class="mp" id="midiPlayer"><h3 id="mfn">—</h3><div id="midiStats"></div>
     <div class="pb"><button class="btn bg" onclick="playMF()">▶</button><button class="btn bs" onclick="stopMF()">⏹</button><div class="pw"><div class="pf" id="pf" onclick="seekFromBar(event)"></div></div><span class="pt" id="ptime">0:00 / 0:00</span><div class="tw"><label>Tempo</label><input type="range" id="tempoSlider" min="25" max="200" value="100"><span id="tempoVal">100%</span></div></div>
     <span class="chmx-h" id="lStH" style="display:none">Audio Stems — M=mute, S=solo</span><div id="stemMixer"></div>
+    <div id="transcribeBox" style="display:none;margin:6px 0;"><button class="btn bp" id="btnTranscribe" onclick="requestTranscribe()">🎼 Transcribe to MIDI (sheet music)</button><span id="trxSt" style="font-size:0.65rem;color:var(--txm);margin-left:8px;"></span></div>
+    <div id="sheetBox" style="display:none;background:#fff;border:1px solid var(--bdr);border-radius:7px;padding:6px;margin:6px 0;max-height:280px;overflow:auto;"></div>
     <div class="kb-outer" style="margin-top:8px;"><div class="nav-arrow left" onclick="scrollKb('fKb',-1)">‹</div><div class="nav-arrow right" onclick="scrollKb('fKb',1)">›</div><div class="kb-scroll"><div class="piano" id="fKb"></div></div></div>
     <span class="chmx-h" id="lChH">MIDI Channels — click to mute</span><div id="chMixer"></div>
     <div id="pentagrams"></div>
@@ -461,33 +464,70 @@ function resetStems(){
 }
 function addStem(name,url){
   const audio=new Audio(url);audio.preload='auto';audio.volume=1;
+  // Pitch-preserved tempo when playbackRate != 1
+  audio.preservesPitch=true;
+  if('mozPreservesPitch' in audio)audio.mozPreservesPitch=true;
+  if('webkitPreservesPitch' in audio)audio.webkitPreservesPitch=true;
   stems[name]={audio,vol:1,mute:false,solo:false};
   stemOrder.push(name);
 }
 function finalizeStemLoad(displayName){
   stemOrder.sort((a,b)=>{const ia=STEM_ORDER.indexOf(a),ib=STEM_ORDER.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib);});
-  // The "original" track defaults to muted so the stems play (otherwise double-volume).
   if(stems['original']){stems['original'].mute=true;}
   buildStemMixer();
   if(stemOrder.length){
     document.getElementById('midiPlayer').classList.add('vis');
     document.getElementById('mfn').textContent='🎵 '+displayName;
     if(!parsedMidi)document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Stems</span><span>${stemOrder.length}</span></div>`;
+    // Reveal the "Transcribe to MIDI" button if we have an original (server-known song id).
+    const tb=document.getElementById('transcribeBox');
+    if(currentSongId)tb.style.display='';else tb.style.display='none';
   }
 }
+let currentSongId=null;
+async function requestTranscribe(){
+  if(!currentSongId)return;
+  const btn=document.getElementById('btnTranscribe');btn.disabled=true;
+  const st=document.getElementById('trxSt');st.textContent='Starting...';
+  try{
+    const r=await fetch('/transcribe/'+currentSongId,{method:'POST'});
+    if(!r.ok)throw new Error('start failed: '+r.status);
+    while(true){
+      await new Promise(res=>setTimeout(res,2000));
+      const sr=await fetch('/transcribe/'+currentSongId);
+      const j=await sr.json();
+      st.textContent=`${j.status} ${j.progress||0}%${j.detail?' — '+j.detail:''}`;
+      if(j.status==='done'){
+        const mr=await fetch(j.midi_url);const mb=new Uint8Array(await mr.arrayBuffer());
+        parsedMidi=parseMFile(mb);if(parsedMidi)showMidi('transcription.mid');
+        renderSheet(j.midi_url);
+        st.textContent='✓ Done';btn.disabled=false;
+        return;
+      }
+      if(j.status==='error'){throw new Error(j.error);}
+    }
+  }catch(e){
+    st.textContent='Error: '+e.message;btn.disabled=false;
+  }
+}
+function renderSheet(midiUrl){
+  const box=document.getElementById('sheetBox');box.style.display='';
+  box.innerHTML=`<midi-visualizer type="staff" src="${midiUrl}" id="staffViz"></midi-visualizer>`;
+}
 async function separateAudio(file){
-  resetStems();
+  resetStems();currentSongId=null;
   document.getElementById('midiPlayer').classList.add('vis');
   document.getElementById('mfn').textContent='🎵 '+file.name;
   document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Status</span><span id="sepSt">Uploading…</span></div><div class="ms"><span>Progress</span><span id="sepPct">0%</span></div>`;
+  document.getElementById('transcribeBox').style.display='none';
+  document.getElementById('sheetBox').style.display='none';
   addLog(`Uploading ${file.name} to /separate`,'inf');
   try{
     const fd=new FormData();fd.append('audio',file);
     const r=await fetch('/separate',{method:'POST',body:fd});
     if(!r.ok){throw new Error('upload failed: '+r.status);}
-    const j=await r.json();
+    const j=await r.json();currentSongId=j.song_id;
     document.getElementById('sepSt').textContent=j.cached?'Loading cached stems…':'Separating…';
-    // Poll status
     while(true){
       await new Promise(res=>setTimeout(res,j.cached?100:1500));
       const sr=await fetch('/status/'+j.song_id);

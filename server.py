@@ -21,9 +21,11 @@ Dependencies (already installed): demucs, flask
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -36,9 +38,11 @@ CACHE.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder=None)
 
-# {song_id: {"status": "running"|"done"|"error", "progress": 0..100, "stems": {...}, "error": str|None}}
+# Separation jobs and transcription jobs.
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+_trx_jobs: dict[str, dict] = {}
+_trx_lock = threading.Lock()
 
 
 def _hash_file(path: Path) -> str:
@@ -187,6 +191,117 @@ def status(song_id: str):
 @app.route("/stems/<song_id>/<path:fname>")
 def serve_stem(song_id: str, fname: str):
     return send_from_directory(CACHE / song_id, fname)
+
+
+def _find_original(song_id: str) -> Path | None:
+    job_dir = CACHE / song_id
+    if not job_dir.exists():
+        return None
+    for cand in list(job_dir.glob("original.*")) + list(job_dir.glob("_input.*")):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _run_transcribe(song_id: str, audio_path: Path) -> None:
+    """Re-uses the chunked YourMT3+ pipeline from transcribe.py."""
+    try:
+        with _trx_lock:
+            _trx_jobs[song_id] = {"status": "running", "progress": 5,
+                                  "detail": "Connecting", "error": None}
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            raise RuntimeError("HF_TOKEN env var is not set; "
+                               "transcription needs a HuggingFace token.")
+        # Lazy import so server starts fast and Flask doesn't pull in librosa et al.
+        import librosa, soundfile as sf, mido
+        from gradio_client import Client, handle_file
+        import transcribe as trx
+        import rechannel
+
+        out_mid = CACHE / song_id / "transcription.mid"
+        chunk_sec = 60.0
+
+        with tempfile.TemporaryDirectory(prefix="trx_") as work:
+            work = Path(work)
+            with _trx_lock:
+                _trx_jobs[song_id]["detail"] = "Chunking audio"
+            chunks_paths = trx.chunk_audio(audio_path, chunk_sec, work / "chunks")
+            with _trx_lock:
+                _trx_jobs[song_id]["detail"] = f"{len(chunks_paths)} chunks queued"
+
+            with _trx_lock:
+                _trx_jobs[song_id]["progress"] = 8
+            client = Client(trx.SPACE, token=token)
+
+            all_chunks: list[tuple[float, mido.MidiFile]] = []
+            n = len(chunks_paths)
+            for i, wav in enumerate(chunks_paths):
+                start = i * chunk_sec
+                with _trx_lock:
+                    _trx_jobs[song_id]["progress"] = 10 + int(80 * i / max(1, n))
+                    _trx_jobs[song_id]["detail"] = f"Chunk {i+1}/{n}"
+                try:
+                    mid = trx.transcribe_chunk(client, wav)
+                    all_chunks.append((start, mid))
+                except Exception as e:
+                    with _trx_lock:
+                        _trx_jobs[song_id]["detail"] = f"chunk {i+1} failed: {e}"
+
+            if not all_chunks:
+                raise RuntimeError("All chunks failed to transcribe")
+
+            raw = CACHE / song_id / "_raw.mid"
+            with _trx_lock:
+                _trx_jobs[song_id]["detail"] = "Merging"; _trx_jobs[song_id]["progress"] = 92
+            trx.merge_chunks(all_chunks, raw)
+            with _trx_lock:
+                _trx_jobs[song_id]["detail"] = "Rechanneling"; _trx_jobs[song_id]["progress"] = 96
+            rechannel.rechannel(raw, out_mid)
+            try: raw.unlink()
+            except Exception: pass
+
+        with _trx_lock:
+            _trx_jobs[song_id]["status"] = "done"
+            _trx_jobs[song_id]["progress"] = 100
+            _trx_jobs[song_id]["detail"] = "Ready"
+            _trx_jobs[song_id]["midi_url"] = f"/stems/{song_id}/transcription.mid"
+    except Exception as e:
+        with _trx_lock:
+            _trx_jobs[song_id] = {"status": "error", "progress": 0,
+                                  "error": str(e), "detail": str(e)}
+
+
+@app.route("/transcribe/<song_id>", methods=["POST"])
+def start_transcribe(song_id: str):
+    audio = _find_original(song_id)
+    if audio is None:
+        return jsonify({"error": "no original audio for that song_id"}), 404
+    # If already done, return cached
+    cached = CACHE / song_id / "transcription.mid"
+    if cached.exists():
+        with _trx_lock:
+            _trx_jobs[song_id] = {"status": "done", "progress": 100,
+                                  "detail": "Cached",
+                                  "midi_url": f"/stems/{song_id}/transcription.mid"}
+        return jsonify({"started": True, "cached": True})
+    th = threading.Thread(target=_run_transcribe,
+                          args=(song_id, audio), daemon=True)
+    th.start()
+    return jsonify({"started": True})
+
+
+@app.route("/transcribe/<song_id>", methods=["GET"])
+def status_transcribe(song_id: str):
+    cached = CACHE / song_id / "transcription.mid"
+    with _trx_lock:
+        job = dict(_trx_jobs.get(song_id) or {})
+    if not job and cached.exists():
+        return jsonify({"status": "done", "progress": 100, "detail": "Cached",
+                        "midi_url": f"/stems/{song_id}/transcription.mid"})
+    if not job:
+        return jsonify({"status": "unknown"}), 404
+    return jsonify(job)
 
 
 if __name__ == "__main__":
