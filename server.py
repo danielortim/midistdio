@@ -89,9 +89,9 @@ def _run_demucs(song_id: str, src_audio: Path) -> None:
         if proc.returncode != 0:
             raise RuntimeError(f"demucs exited {proc.returncode}")
 
-        stem_src = out / "htdemucs" / src_audio.stem
+        stem_src = out / "htdemucs_6s" / src_audio.stem
         stems = {}
-        for name in ("vocals", "drums", "bass", "other"):
+        for name in ("vocals", "drums", "bass", "other", "piano", "guitar"):
             p = stem_src / f"{name}.wav"
             if p.exists():
                 dest = job_dir / f"{name}.wav"
@@ -148,7 +148,7 @@ def separate():
     # Cache hit: stems already exist
     if job_dir.exists():
         cached = {}
-        for name in ("vocals", "drums", "bass", "other"):
+        for name in ("vocals", "drums", "bass", "other", "piano", "guitar"):
             if (job_dir / f"{name}.wav").exists():
                 cached[name] = f"/stems/{song_id}/{name}.wav"
         for orig in job_dir.glob("original.*"):
@@ -179,11 +179,10 @@ def status(song_id: str):
     with _jobs_lock:
         job = _jobs.get(song_id)
     if not job:
-        # Maybe it's a cached song server-restarted; check disk
         job_dir = CACHE / song_id
         if job_dir.exists():
             cached = {}
-            for name in ("vocals", "drums", "bass", "other"):
+            for name in ("vocals", "drums", "bass", "other", "piano", "guitar"):
                 if (job_dir / f"{name}.wav").exists():
                     cached[name] = f"/stems/{song_id}/{name}.wav"
             for orig in job_dir.glob("original.*"):
