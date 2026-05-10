@@ -116,6 +116,12 @@ input[type=range]{width:90px;accent-color:var(--acc);}input[type=color]{width:28
 .pent .pview{flex:1;height:80px;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;overflow:hidden;position:relative;}
 .pent .pview svg{display:block;position:absolute;top:0;left:25%;will-change:transform;}
 .pent .phead{position:absolute;top:0;bottom:0;width:1px;background:var(--acc);box-shadow:0 0 5px var(--acc);left:25%;z-index:2;pointer-events:none;}
+/* Synthesia / Guitar Hero falling-notes */
+.synth-wrap{position:relative;background:linear-gradient(180deg,#000 0%,#0a0a14 100%);border:1px solid var(--bdr);border-radius:7px 7px 0 0;border-bottom:none;overflow:hidden;}
+.synth-wrap canvas{display:block;}
+.synth-strike{position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,#f87171,#fb923c,#fbbf24,#34d399,#60a5fa,#a78bfa,#f472b6);box-shadow:0 0 12px rgba(192,132,252,0.7);z-index:3;}
+.synth-toggle{position:absolute;top:6px;right:8px;background:rgba(0,0,0,0.5);border:1px solid var(--bdr);color:var(--txd);font-family:var(--fm);font-size:0.6rem;padding:3px 8px;border-radius:4px;cursor:pointer;z-index:4;}
+.synth-toggle:hover{color:var(--acc);border-color:var(--acc);}
 
 /* Stem mixer (audio stems alongside MIDI) */
 #stemMixer{display:flex;flex-direction:column;gap:4px;margin:0 0 6px;}
@@ -148,7 +154,8 @@ input[type=range]{width:90px;accent-color:var(--acc);}input[type=color]{width:28
     <span class="chmx-h" id="lStH" style="display:none">Audio Stems — M=mute, S=solo</span><div id="stemMixer"></div>
     <div id="transcribeBox" style="display:none;margin:6px 0;"><button class="btn bp" id="btnTranscribe" onclick="requestTranscribe()">🎼 Transcribe to MIDI (sheet music)</button><span id="trxSt" style="font-size:0.65rem;color:var(--txm);margin-left:8px;"></span></div>
     <div id="sheetBox" style="display:none;background:#fff;border:1px solid var(--bdr);border-radius:7px;padding:6px;margin:6px 0;max-height:280px;overflow:auto;"></div>
-    <div class="kb-outer" style="margin-top:8px;"><div class="nav-arrow left" onclick="scrollKb('fKb',-1)">‹</div><div class="nav-arrow right" onclick="scrollKb('fKb',1)">›</div><div class="kb-scroll"><div class="piano" id="fKb"></div></div></div>
+    <div class="synth-wrap" id="synthWrap" style="margin-top:8px;display:none;"><button class="synth-toggle" onclick="toggleSynth()">Hide notes</button><canvas id="synthCanvas" width="1000" height="220"></canvas><div class="synth-strike"></div></div>
+    <div class="kb-outer" style="margin-top:0;"><div class="nav-arrow left" onclick="scrollKb('fKb',-1)">‹</div><div class="nav-arrow right" onclick="scrollKb('fKb',1)">›</div><div class="kb-scroll"><div class="piano" id="fKb"></div></div></div>
     <span class="chmx-h" id="lChH">MIDI Channels — click to mute</span><div id="chMixer"></div>
     <div id="pentagrams"></div>
     <div class="lb" style="max-height:100px;margin-top:6px;"><div class="lh2"><span id="lML">Playback Log</span></div><div class="lc" id="fLog"></div></div>
@@ -709,8 +716,101 @@ function startPentAnim(){
   tick();
 }
 function stopPentAnim(){cancelAnimationFrame(pentRAF);pentRAF=null;document.querySelectorAll('#pentagrams .pent .pview svg').forEach(s=>{s.style.transform='translateX(0px)';});}
+
+// ═══ SYNTHESIA / GUITAR-HERO FALLING NOTES ═══
+let synthRAF=null,synthEnabled=true;
+const SYNTH_PXMS=0.18; // pixels per ms (~ 180px/sec) tweakable
+function toggleSynth(){
+  synthEnabled=!synthEnabled;
+  const w=document.getElementById('synthWrap');const btn=w.querySelector('.synth-toggle');
+  if(synthEnabled){w.style.display='';btn.textContent='Hide notes';drawSynth(0);}
+  else{w.style.display='none';btn.textContent='Show notes';}
+}
+function setupSynth(){
+  if(!chData||!Object.keys(chData).length){
+    document.getElementById('synthWrap').style.display='none';return;
+  }
+  if(!synthEnabled)return;
+  document.getElementById('synthWrap').style.display='';
+  const kb=document.getElementById('fKb');const canvas=document.getElementById('synthCanvas');
+  const w=Math.max(kb.offsetWidth||800,800);
+  canvas.width=w;canvas.height=220;
+  drawSynth(0);
+}
+function getKeyPositions(){
+  const kb=document.getElementById('fKb');const map={};if(!kb)return map;
+  const kbRect=kb.getBoundingClientRect();
+  kb.querySelectorAll('.pk').forEach(k=>{
+    const note=parseInt(k.dataset.note);
+    const r=k.getBoundingClientRect();
+    map[note]={x:r.left-kbRect.left,w:r.width,isBlack:k.classList.contains('b')};
+  });
+  return map;
+}
+function drawSynth(currentMs){
+  const canvas=document.getElementById('synthCanvas');if(!canvas)return;
+  const ctx=canvas.getContext('2d');const W=canvas.width,H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+  // subtle vertical grid lines aligned with white-key boundaries
+  const keys=getKeyPositions();
+  ctx.fillStyle='rgba(255,255,255,0.025)';
+  Object.values(keys).forEach(k=>{if(!k.isBlack)ctx.fillRect(k.x,0,k.w,H);});
+  // Time window: from currentMs (bottom) to currentMs + lookahead (top)
+  const lookaheadMs=H/SYNTH_PXMS;
+  const tailMs=120;
+  Object.entries(chData).forEach(([ch,d])=>{
+    if(chMute[ch])return;
+    const col=d.color;
+    d.notes.forEach(n=>{
+      if(n.endMs<currentMs-tailMs)return;
+      if(n.startMs>currentMs+lookaheadMs)return;
+      const k=keys[n.note];if(!k)return;
+      // y of the note's onset (bottom of the rectangle = strike line at H)
+      const yStart=H-(n.startMs-currentMs)*SYNTH_PXMS;
+      const yEnd=H-(n.endMs-currentMs)*SYNTH_PXMS;
+      const yTop=Math.min(yStart,yEnd),yBot=Math.max(yStart,yEnd);
+      const noteH=Math.max(3,yBot-yTop);
+      // Color slightly brighter when about to hit
+      const distToStrike=n.startMs-currentMs;
+      const glow=distToStrike<400&&distToStrike>=0;
+      ctx.fillStyle=col;
+      ctx.globalAlpha=glow?1:0.78;
+      const inset=k.isBlack?1:2;
+      const rx=Math.min(4,k.w/3);
+      // Rounded rect
+      const x=k.x+inset,wid=k.w-inset*2;
+      ctx.beginPath();
+      ctx.moveTo(x+rx,yTop);
+      ctx.lineTo(x+wid-rx,yTop);
+      ctx.quadraticCurveTo(x+wid,yTop,x+wid,yTop+rx);
+      ctx.lineTo(x+wid,yBot-rx);
+      ctx.quadraticCurveTo(x+wid,yBot,x+wid-rx,yBot);
+      ctx.lineTo(x+rx,yBot);
+      ctx.quadraticCurveTo(x,yBot,x,yBot-rx);
+      ctx.lineTo(x,yTop+rx);
+      ctx.quadraticCurveTo(x,yTop,x+rx,yTop);
+      ctx.closePath();
+      ctx.fill();
+      if(glow){
+        ctx.shadowColor=col;ctx.shadowBlur=10;ctx.fill();ctx.shadowBlur=0;
+      }
+      ctx.globalAlpha=1;
+    });
+  });
+}
+function startSynthAnim(){
+  cancelAnimationFrame(synthRAF);
+  function tick(){
+    const elapsed=Date.now()-mfStart;
+    const musicMs=elapsed*mfTs;
+    drawSynth(musicMs);
+    synthRAF=requestAnimationFrame(tick);
+  }
+  tick();
+}
+function stopSynthAnim(){cancelAnimationFrame(synthRAF);synthRAF=null;drawSynth(0);}
 function showMidi(name){if(!parsedMidi)return;buildKb('fKb');document.getElementById('midiPlayer').classList.add('vis');document.getElementById('mfn').textContent='🎵 '+name;
-  buildChannelData();buildChMixer();buildPentagrams();
+  buildChannelData();buildChMixer();buildPentagrams();setupSynth();
   const tn=parsedMidi.tracks.reduce((s,t)=>s+t.nc,0);const nch=Object.keys(chData).length;
   document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Format</span><span>Type ${parsedMidi.fmt}</span></div><div class="ms"><span>Tracks</span><span>${parsedMidi.nTk}</span></div><div class="ms"><span>Channels</span><span>${nch}</span></div><div class="ms"><span>Notes</span><span>${tn}</span></div>`;
   document.getElementById('fLog').innerHTML='';document.getElementById('pf').style.width='0%';document.getElementById('ptime').textContent='0:00 / 0:00';}
@@ -757,7 +857,7 @@ function playMF(offsetMs=0){
   startStems(offsetMs);
   clearInterval(mfProgI);
   mfProgI=setInterval(()=>{const el=Date.now()-mfStart;const pct=Math.min(100,el/mfDur*100);document.getElementById('pf').style.width=pct+'%';document.getElementById('ptime').textContent=`${fmtT(el)} / ${fmtT(mfDur)}`;if(pct>=100){clearInterval(mfProgI);stopMF();}},100);
-  startPentAnim();addLog(`▶ Playing${parsedMidi?' MIDI':''}${stemOrder.length?' + '+stemOrder.length+' stems':''}`,'inf');
+  startPentAnim();startSynthAnim();addLog(`▶ Playing${parsedMidi?' MIDI':''}${stemOrder.length?' + '+stemOrder.length+' stems':''}`,'inf');
 }
 function fmtT(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return`${m}:${String(s%60).padStart(2,'0')}`;}
 function stopMF(){
@@ -765,7 +865,7 @@ function stopMF(){
   activeNotes.forEach(n=>{hlKey(n,false);synthOff(n);});activeNotes.clear();
   Object.keys(activeChNotes).forEach(ch=>activeChNotes[ch].clear());
   stopStems();
-  document.getElementById('pf').style.width='0%';stopPentAnim();
+  document.getElementById('pf').style.width='0%';stopPentAnim();stopSynthAnim();
 }
 
 // ═══ COLORS ═══
@@ -781,7 +881,43 @@ function buildTabs(){const bar=document.getElementById('tabBar');bar.innerHTML='
 document.getElementById('velScale').addEventListener('input',function(){document.getElementById('velV').textContent=this.value+'%';});
 document.getElementById('revMix').addEventListener('input',function(){document.getElementById('revV').textContent=this.value+'%';if(wetGain&&dryGain){wetGain.gain.value=this.value/100*0.5;dryGain.gain.value=1-this.value/100*0.35;}});
 document.getElementById('masterVol').addEventListener('input',function(){if(masterGain)masterGain.gain.value=this.value/100;});
-document.getElementById('tempoSlider').addEventListener('input',function(){document.getElementById('tempoVal').textContent=this.value+'%';});
+document.getElementById('tempoSlider').addEventListener('input',function(){
+  document.getElementById('tempoVal').textContent=this.value+'%';
+  const newRate=parseInt(this.value)/100;
+  // Live audio update — no restart
+  stemOrder.forEach(n=>{if(stems[n]&&stems[n].audio)stems[n].audio.playbackRate=newRate;});
+  // If MIDI is currently scheduled, restart MIDI scheduling at current pos.
+  // Audio keeps playing (we just changed its rate), MIDI gets rescheduled.
+  if(mfTOs.length&&parsedMidi){
+    const oldRate=mfTs||1;
+    const currentMusicMs=(Date.now()-mfStart)*oldRate;
+    mfTOs.forEach(clearTimeout);mfTOs=[];
+    mfTs=newRate;
+    mfStart=Date.now()-currentMusicMs/mfTs;
+    rescheduleMIDIFrom(currentMusicMs);
+  }else{
+    mfTs=newRate;
+  }
+});
+function rescheduleMIDIFrom(offsetMs){
+  if(!parsedMidi)return;
+  const tpq=parsedMidi.tpq;
+  let tm=[];parsedMidi.tracks.forEach(tr=>tr.events.forEach(e=>{if(e.type==='tempo')tm.push({tick:e.tick,tempo:e.tempo});}));
+  tm.sort((a,b)=>a.tick-b.tick);if(!tm.length)tm.push({tick:0,tempo:500000});
+  function t2m(tick){let ms=0,lt=0,tp=500000;for(const t of tm){if(t.tick>tick)break;ms+=((t.tick-lt)/tpq)*(tp/1000);lt=t.tick;tp=t.tempo;}ms+=((tick-lt)/tpq)*(tp/1000);return ms/mfTs;}
+  const ae=[];parsedMidi.tracks.forEach(tr=>tr.events.forEach(e=>{if(e.type==='noteOn'||e.type==='noteOff')ae.push(e);}));
+  ae.sort((a,b)=>a.tick-b.tick);
+  ae.forEach(ev=>{const ms=t2m(ev.tick);if(ms<offsetMs)return;const delay=ms-offsetMs;const tid=setTimeout(()=>{
+    if(ev.type==='noteOn'&&ev.vel>0){
+      if(chMute[ev.ch])return;
+      activeNotes.add(ev.note);if(!activeChNotes[ev.ch])activeChNotes[ev.ch]=new Set();activeChNotes[ev.ch].add(ev.note);
+      hlKey(ev.note,true);if(shouldPC())synthOn(ev.note,ev.vel);if(shouldMD())outputs.forEach(o=>o.send([0x90|ev.ch,ev.note,ev.vel]));
+    }else{
+      activeNotes.delete(ev.note);if(activeChNotes[ev.ch])activeChNotes[ev.ch].delete(ev.note);
+      hlKey(ev.note,false);synthOff(ev.note);if(shouldMD())outputs.forEach(o=>o.send([0x80|ev.ch,ev.note,0]));
+    }
+  },delay);mfTOs.push(tid);});
+}
 const cs=document.getElementById('outCh');for(let i=1;i<=16;i++){const o=document.createElement('option');o.value=i;o.textContent=i;cs.appendChild(o);}
 
 // ═══ INIT ═══
