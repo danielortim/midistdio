@@ -230,12 +230,11 @@ def _run_transcribe(song_id: str, audio_path: Path) -> None:
 
         job_dir = CACHE / song_id
         stem_files = []
-        for name in ("vocals", "bass", "other"):
+        for name in ("vocals", "bass", "other", "piano", "guitar"):
             p = job_dir / f"{name}.wav"
             if p.exists():
                 stem_files.append((name, p))
         if not stem_files:
-            # Fall back to the original audio as a single track
             stem_files.append(("mix", audio_path))
 
         with tempfile.TemporaryDirectory(prefix="bp_") as work:
