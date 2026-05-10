@@ -410,20 +410,125 @@ function parseMFile(data){try{const dv=new DataView(data.buffer);if(String.fromC
   nt.forEach(t=>{const d=detectH(t.name);if(d==='right'&&!rF){thm[t.idx]='right';rF=true;}else if(d==='left'&&!lF){thm[t.idx]='left';lF=true;}});
   if(!rF&&!lF){if(nt.length>=2){thm[nt[0].idx]='right';thm[nt[1].idx]='left';}else if(nt.length===1)thm[nt[0].idx]='both';}
   return{fmt,nTk,tpq,tracks};}catch(e){return null;}}
+function buildChannelData(){
+  chData={};activeChNotes={};
+  if(!parsedMidi)return;
+  const tpq=parsedMidi.tpq;let tm=[];
+  parsedMidi.tracks.forEach(tr=>tr.events.forEach(e=>{if(e.type==='tempo')tm.push({tick:e.tick,tempo:e.tempo});}));
+  tm.sort((a,b)=>a.tick-b.tick);if(!tm.length)tm.push({tick:0,tempo:500000});
+  function t2m(tick){let ms=0,lt=0,tp=500000;for(const t of tm){if(t.tick>tick)break;ms+=((t.tick-lt)/tpq)*(tp/1000);lt=t.tick;tp=t.tempo;}ms+=((tick-lt)/tpq)*(tp/1000);return ms;}
+  const all=[];
+  parsedMidi.tracks.forEach(tr=>tr.events.forEach(e=>{if(e.type==='noteOn'||e.type==='noteOff')all.push({...e,ms:t2m(e.tick)});}));
+  all.sort((a,b)=>a.ms-b.ms||(a.type==='noteOff'?-1:1));
+  const open={};
+  all.forEach(e=>{
+    if(!chData[e.ch])chData[e.ch]={notes:[],count:0,minN:127,maxN:0,color:CH_COLORS[e.ch%16]};
+    const k=`${e.ch}_${e.note}`;
+    if(e.type==='noteOn'&&e.vel>0){open[k]=e;}
+    else{const s=open[k];if(s){chData[e.ch].notes.push({note:e.note,startMs:s.ms,endMs:Math.max(e.ms,s.ms+30),vel:s.vel});chData[e.ch].count++;if(e.note<chData[e.ch].minN)chData[e.ch].minN=e.note;if(e.note>chData[e.ch].maxN)chData[e.ch].maxN=e.note;delete open[k];}}
+  });
+  // Close any still-open notes at the last event ms
+  const lastMs=all.length?all[all.length-1].ms:0;
+  Object.values(open).forEach(s=>{if(!chData[s.ch])return;chData[s.ch].notes.push({note:s.note,startMs:s.ms,endMs:lastMs+200,vel:s.vel});chData[s.ch].count++;});
+  chMute={};Object.keys(chData).forEach(ch=>chMute[ch]=false);
+}
+function buildChMixer(){
+  const mx=document.getElementById('chMixer');mx.innerHTML='';
+  const chs=Object.keys(chData).sort((a,b)=>parseInt(a)-parseInt(b));
+  if(!chs.length){mx.innerHTML='<span style="font-size:0.65rem;color:var(--txm);">No channels</span>';return;}
+  chs.forEach(ch=>{
+    const d=chData[ch];const el=document.createElement('div');
+    el.className='chmx'+(chMute[ch]?' muted':'');el.dataset.ch=ch;
+    el.innerHTML=`<div class="chsw" style="background:${d.color}"></div>CH ${parseInt(ch)+1} <span class="chnt">(${d.count})</span>`;
+    el.onclick=()=>toggleChMute(ch);
+    mx.appendChild(el);
+  });
+}
+function toggleChMute(ch){
+  chMute[ch]=!chMute[ch];
+  const el=document.querySelector(`.chmx[data-ch="${ch}"]`);if(el)el.classList.toggle('muted',chMute[ch]);
+  const p=document.querySelector(`.pent[data-ch="${ch}"]`);if(p)p.classList.toggle('muted',chMute[ch]);
+  // Kill currently active notes from this channel
+  if(chMute[ch]&&activeChNotes[ch]){activeChNotes[ch].forEach(n=>{hlKey(n,false);synthOff(n);activeNotes.delete(n);});activeChNotes[ch].clear();}
+}
+function pStaffY(note,svgH){const sp=Math.floor(note/12)*7+SCK[note%12];return svgH/2+(41-sp)*4;}
+function buildPentagrams(){
+  const c=document.getElementById('pentagrams');c.innerHTML='';
+  const chs=Object.keys(chData).sort((a,b)=>parseInt(a)-parseInt(b));
+  chs.forEach(ch=>{
+    const d=chData[ch];if(!d.notes.length)return;
+    const pent=document.createElement('div');pent.className='pent'+(chMute[ch]?' muted':'');pent.dataset.ch=ch;
+    pent.innerHTML=`<div class="plbl"><b>CH ${parseInt(ch)+1}</b>${d.count} ♪</div><div class="pview"><div class="phead"></div></div>`;
+    c.appendChild(pent);
+  });
+  // Defer SVG render until DOM has layout
+  requestAnimationFrame(()=>renderPentSVGs());
+}
+function renderPentSVGs(){
+  const chs=Object.keys(chData).sort((a,b)=>parseInt(a)-parseInt(b));
+  chs.forEach(ch=>{
+    const pent=document.querySelector(`.pent[data-ch="${ch}"]`);if(!pent)return;
+    const view=pent.querySelector('.pview');const d=chData[ch];
+    const svgH=80,vw=view.clientWidth||400;
+    const totalMs=d.notes.length?d.notes[d.notes.length-1].endMs:0;
+    const svgW=Math.max(vw,Math.ceil(totalMs*PENT_PXMS)+vw);
+    const staffTop=svgH/2-16;
+    let lines='';for(let i=0;i<5;i++){const y=staffTop+i*8;lines+=`<line x1="0" y1="${y}" x2="${svgW}" y2="${y}" stroke="#3a3a4a" stroke-width="1"/>`;}
+    let notes='';const col=d.color;
+    d.notes.forEach(n=>{
+      const x=n.startMs*PENT_PXMS,w=Math.max(2,(n.endMs-n.startMs)*PENT_PXMS),y=pStaffY(n.note,svgH);
+      let lg='';const sTop=staffTop,sBot=staffTop+32;
+      if(y<sTop-2){for(let ly=sTop-8;ly>=y-2;ly-=8)lg+=`<line x1="${x-4}" y1="${ly}" x2="${x+w+4}" y2="${ly}" stroke="#3a3a4a" stroke-width="1"/>`;}
+      else if(y>sBot+2){for(let ly=sBot+8;ly<=y+2;ly+=8)lg+=`<line x1="${x-4}" y1="${ly}" x2="${x+w+4}" y2="${ly}" stroke="#3a3a4a" stroke-width="1"/>`;}
+      notes+=lg+`<rect x="${x}" y="${y-3}" width="${w}" height="6" rx="2" fill="${col}" opacity="0.9"/>`;
+    });
+    // Existing phead element stays; insert SVG before it
+    const phead=view.querySelector('.phead');
+    view.innerHTML=`<svg width="${svgW}" height="${svgH}">${lines}${notes}</svg>`;
+    view.appendChild(phead||Object.assign(document.createElement('div'),{className:'phead'}));
+    // Re-add phead since innerHTML wiped it
+    if(!view.querySelector('.phead')){const ph=document.createElement('div');ph.className='phead';view.appendChild(ph);}
+  });
+}
+function startPentAnim(){
+  cancelAnimationFrame(pentRAF);
+  function tick(){
+    const musicMs=(Date.now()-mfStart)*mfTs;const tx=-musicMs*PENT_PXMS;
+    document.querySelectorAll('#pentagrams .pent .pview svg').forEach(s=>{s.style.transform=`translateX(${tx}px)`;});
+    pentRAF=requestAnimationFrame(tick);
+  }
+  tick();
+}
+function stopPentAnim(){cancelAnimationFrame(pentRAF);pentRAF=null;document.querySelectorAll('#pentagrams .pent .pview svg').forEach(s=>{s.style.transform='translateX(0px)';});}
 function showMidi(name){if(!parsedMidi)return;buildKb('fKb');document.getElementById('midiPlayer').classList.add('vis');document.getElementById('mfn').textContent='🎵 '+name;
-  const tn=parsedMidi.tracks.reduce((s,t)=>s+t.nc,0);document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Format</span><span>Type ${parsedMidi.fmt}</span></div><div class="ms"><span>Tracks</span><span>${parsedMidi.nTk}</span></div><div class="ms"><span>Notes</span><span>${tn}</span></div>`;
-  const as=document.getElementById('trackAssign');as.innerHTML='<strong style="font-size:0.68rem;color:var(--txm);display:block;margin:8px 0 4px;">TRACK → HAND</strong>';
-  parsedMidi.tracks.forEach((t,i)=>{if(t.nc===0&&t.events.length<3)return;const dh=detectH(t.name);const dl=dh?` [auto:${dh}]`:'';const row=document.createElement('div');row.className='tr';row.innerHTML=`<span class="tn">${t.name}${dl} <span style="color:var(--acc)">(${t.nc})</span></span><select onchange="thm[${i}]=this.value"><option value="none" ${thm[i]==='none'?'selected':''}>Skip</option><option value="right" ${thm[i]==='right'?'selected':''}>Right</option><option value="left" ${thm[i]==='left'?'selected':''}>Left</option><option value="both" ${thm[i]==='both'?'selected':''}>Both</option></select>`;as.appendChild(row);});
+  buildChannelData();buildChMixer();buildPentagrams();
+  const tn=parsedMidi.tracks.reduce((s,t)=>s+t.nc,0);const nch=Object.keys(chData).length;
+  document.getElementById('midiStats').innerHTML=`<div class="ms"><span>Format</span><span>Type ${parsedMidi.fmt}</span></div><div class="ms"><span>Tracks</span><span>${parsedMidi.nTk}</span></div><div class="ms"><span>Channels</span><span>${nch}</span></div><div class="ms"><span>Notes</span><span>${tn}</span></div>`;
   document.getElementById('fLog').innerHTML='';document.getElementById('pf').style.width='0%';document.getElementById('ptime').textContent='0:00 / 0:00';}
-function setHF(f){hf=f;document.querySelectorAll('.hb').forEach(b=>b.classList.remove('a'));document.getElementById(f==='both'?'hBoth':f==='right'?'hRight':'hLeft').classList.add('a');}
-function playMF(){if(!parsedMidi)return;ensureAudio();stopMF();const ts=parseInt(document.getElementById('tempoSlider').value)/100,tpq=parsedMidi.tpq;let ae=[],tm=[];parsedMidi.tracks.forEach(tr=>{tr.events.forEach(e=>{if(e.type==='tempo')tm.push({tick:e.tick,tempo:e.tempo});});});tm.sort((a,b)=>a.tick-b.tick);if(!tm.length)tm.push({tick:0,tempo:500000});
-  parsedMidi.tracks.forEach((tr,ti)=>{const h=thm[ti];if(h==='none')return;if(hf==='left'&&h==='right')return;if(hf==='right'&&h==='left')return;const sp=(h==='both'&&hf!=='both');tr.events.forEach(e=>{if(e.type!=='noteOn'&&e.type!=='noteOff')return;let eh=h==='both'?(e.note>=60?'right':'left'):h;if(sp){if(hf==='right'&&e.note<60)return;if(hf==='left'&&e.note>=60)return;}ae.push({...e,hand:eh});});});
-  function t2m(tick){let ms=0,lt2=0,tp=500000;for(const t of tm){if(t.tick>tick)break;ms+=((t.tick-lt2)/tpq)*(tp/1000);lt2=t.tick;tp=t.tempo;}ms+=((tick-lt2)/tpq)*(tp/1000);return ms/ts;}
-  ae.sort((a,b)=>a.tick-b.tick);if(!ae.length)return;mfDur=t2m(ae[ae.length-1].tick);mfStart=Date.now();
-  ae.forEach(ev=>{const ms=t2m(ev.tick);const tid=setTimeout(()=>{if(ev.type==='noteOn'){activeNotes.add(ev.note);hlKey(ev.note,true,ev.hand);if(shouldPC())synthOn(ev.note,ev.vel);if(shouldMD())outputs.forEach(o=>o.send([0x90|ev.ch,ev.note,ev.vel]));addToLog('fLog',`♪ ${infoN(ev.note)} [${ev.hand==='left'?'L':'R'}]`,'mi');}else{activeNotes.delete(ev.note);hlKey(ev.note,false);synthOff(ev.note);}},ms);mfTOs.push(tid);});
-  clearInterval(mfProgI);mfProgI=setInterval(()=>{const el=Date.now()-mfStart;const pct=Math.min(100,el/mfDur*100);document.getElementById('pf').style.width=pct+'%';document.getElementById('ptime').textContent=`${fmtT(el)} / ${fmtT(mfDur)}`;if(pct>=100)clearInterval(mfProgI);},100);addLog(`▶ Playing MIDI — ${hf}`,'inf');}
+function setHF(f){hf=f;}
+function playMF(){if(!parsedMidi)return;ensureAudio();stopMF();
+  mfTs=parseInt(document.getElementById('tempoSlider').value)/100;const tpq=parsedMidi.tpq;
+  let tm=[];parsedMidi.tracks.forEach(tr=>tr.events.forEach(e=>{if(e.type==='tempo')tm.push({tick:e.tick,tempo:e.tempo});}));
+  tm.sort((a,b)=>a.tick-b.tick);if(!tm.length)tm.push({tick:0,tempo:500000});
+  function t2m(tick){let ms=0,lt=0,tp=500000;for(const t of tm){if(t.tick>tick)break;ms+=((t.tick-lt)/tpq)*(tp/1000);lt=t.tick;tp=t.tempo;}ms+=((tick-lt)/tpq)*(tp/1000);return ms/mfTs;}
+  const ae=[];parsedMidi.tracks.forEach(tr=>tr.events.forEach(e=>{if(e.type==='noteOn'||e.type==='noteOff')ae.push(e);}));
+  ae.sort((a,b)=>a.tick-b.tick);if(!ae.length)return;
+  mfDur=t2m(ae[ae.length-1].tick);mfStart=Date.now();
+  ae.forEach(ev=>{const ms=t2m(ev.tick);const tid=setTimeout(()=>{
+    if(ev.type==='noteOn'&&ev.vel>0){
+      if(chMute[ev.ch])return;
+      activeNotes.add(ev.note);if(!activeChNotes[ev.ch])activeChNotes[ev.ch]=new Set();activeChNotes[ev.ch].add(ev.note);
+      hlKey(ev.note,true);if(shouldPC())synthOn(ev.note,ev.vel);if(shouldMD())outputs.forEach(o=>o.send([0x90|ev.ch,ev.note,ev.vel]));
+      addToLog('fLog',`♪ ${infoN(ev.note)} ch:${ev.ch+1}`,'mi');
+    }else{
+      activeNotes.delete(ev.note);if(activeChNotes[ev.ch])activeChNotes[ev.ch].delete(ev.note);
+      hlKey(ev.note,false);synthOff(ev.note);if(shouldMD())outputs.forEach(o=>o.send([0x80|ev.ch,ev.note,0]));
+    }
+  },ms);mfTOs.push(tid);});
+  clearInterval(mfProgI);mfProgI=setInterval(()=>{const el=Date.now()-mfStart;const pct=Math.min(100,el/mfDur*100);document.getElementById('pf').style.width=pct+'%';document.getElementById('ptime').textContent=`${fmtT(el)} / ${fmtT(mfDur)}`;if(pct>=100)clearInterval(mfProgI);},100);
+  startPentAnim();addLog(`▶ Playing MIDI`,'inf');}
 function fmtT(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return`${m}:${String(s%60).padStart(2,'0')}`;}
-function stopMF(){mfTOs.forEach(clearTimeout);mfTOs=[];clearInterval(mfProgI);activeNotes.forEach(n=>{hlKey(n,false);synthOff(n);});activeNotes.clear();document.getElementById('pf').style.width='0%';}
+function stopMF(){mfTOs.forEach(clearTimeout);mfTOs=[];clearInterval(mfProgI);activeNotes.forEach(n=>{hlKey(n,false);synthOff(n);});activeNotes.clear();Object.keys(activeChNotes).forEach(ch=>activeChNotes[ch].clear());document.getElementById('pf').style.width='0%';stopPentAnim();}
 
 // ═══ COLORS ═══
 function buildCG(){const g=document.getElementById('colGrid');g.innerHTML='';Object.entries(CLB).forEach(([k,n])=>{const i=document.createElement('div');i.className='ci';i.innerHTML=`<input type="color" value="${nc[k]}" onchange="updCol('${k}',this.value)"><span>${n}</span>`;g.appendChild(i);});}
