@@ -370,6 +370,16 @@ def status_transcribe(song_id: str):
 
 
 if __name__ == "__main__":
-    print(" * Open http://localhost:8000/ in Chrome")
-    app.run(host="127.0.0.1", port=8000, threaded=True, debug=False)
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        lan_ip = None
+    print(" * Open http://localhost:8000/ on this PC")
+    if lan_ip:
+        print(f" * From another device on the same Wi-Fi: http://{lan_ip}:8000/")
+    app.run(host="0.0.0.0", port=8000, threaded=True, debug=False)
 
