@@ -911,10 +911,10 @@ function rescheduleMIDIFrom(offsetMs){
     if(ev.type==='noteOn'&&ev.vel>0){
       if(chMute[ev.ch])return;
       activeNotes.add(ev.note);if(!activeChNotes[ev.ch])activeChNotes[ev.ch]=new Set();activeChNotes[ev.ch].add(ev.note);
-      hlKey(ev.note,true);if(shouldPC())synthOn(ev.note,ev.vel);if(shouldMD())outputs.forEach(o=>o.send([0x90|ev.ch,ev.note,ev.vel]));
+      hlKey(ev.note,true);if(shouldMD())outputs.forEach(o=>o.send([0x90|ev.ch,ev.note,ev.vel]));
     }else{
       activeNotes.delete(ev.note);if(activeChNotes[ev.ch])activeChNotes[ev.ch].delete(ev.note);
-      hlKey(ev.note,false);synthOff(ev.note);if(shouldMD())outputs.forEach(o=>o.send([0x80|ev.ch,ev.note,0]));
+      hlKey(ev.note,false);if(shouldMD())outputs.forEach(o=>o.send([0x80|ev.ch,ev.note,0]));
     }
   },delay);mfTOs.push(tid);});
 }
