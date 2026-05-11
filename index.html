@@ -151,7 +151,7 @@ input[type=range]{width:90px;accent-color:var(--acc);}input[type=color]{width:28
   <div class="fdrop" id="dropZone" onclick="document.getElementById('mfi').click()" ondragover="event.preventDefault();this.classList.add('dg')" ondragleave="this.classList.remove('dg')" ondrop="handleDrop(event)"><input type="file" id="mfi" accept=".mid,.midi,.wav,.mp3,.ogg" multiple onchange="loadFiles(this.files)"><div style="font-size:1.5rem;margin-bottom:4px">🎵</div><div style="font-weight:600" id="lDrop">Drop a .mid file, or a folder containing MIDI + stems (.wav)</div></div>
   <div class="mp" id="midiPlayer"><h3 id="mfn">—</h3><div id="midiStats"></div>
     <div class="pb"><button class="btn bg" onclick="playMF()">▶</button><button class="btn bs" onclick="stopMF()">⏹</button><div class="pw"><div class="pf" id="pf" onclick="seekFromBar(event)"></div></div><span class="pt" id="ptime">0:00 / 0:00</span><div class="tw"><label>Tempo</label><input type="range" id="tempoSlider" min="25" max="200" value="100"><span id="tempoVal">100%</span></div></div>
-    <span class="chmx-h" id="lStH" style="display:none">Audio Stems — M=mute, S=solo</span><div id="stemMixer"></div>
+    <span class="chmx-h" id="lStH" style="display:none">Audio Stems — M=mute, S=solo <button class="btn bs" onclick="resetMixer()" style="font-size:0.6rem;padding:2px 8px;margin-left:8px;">Reset</button></span><div id="stemMixer"></div>
     <div id="transcribeBox" style="display:none;margin:6px 0;"><button class="btn bp" id="btnTranscribe" onclick="requestTranscribe()">🎼 Transcribe to MIDI (sheet music)</button><span id="trxSt" style="font-size:0.65rem;color:var(--txm);margin-left:8px;"></span></div>
     <div id="sheetBox" style="display:none;background:#fff;border:1px solid var(--bdr);border-radius:7px;padding:6px;margin:6px 0;max-height:280px;overflow:auto;"></div>
     <div class="synth-wrap" id="synthWrap" style="margin-top:8px;display:none;"><button class="synth-toggle" onclick="toggleSynth()">Hide notes</button><canvas id="synthCanvas" width="1000" height="220"></canvas><div class="synth-strike"></div></div>
@@ -578,6 +578,13 @@ function buildStemMixer(){
   applyStemGains();
 }
 function toggleStemMute(name){stems[name].mute=!stems[name].mute;updateStemRow(name);applyStemGains();}
+function resetMixer(){
+  stemOrder.forEach(n=>{const s=stems[n];if(!s)return;s.mute=(n==='original');s.solo=false;s.vol=1;s.audio.volume=1;});
+  buildStemMixer();applyStemGains();
+  // Make extra sure vocals/piano/bass/drums actually play
+  stemOrder.forEach(n=>{const a=stems[n]&&stems[n].audio;if(a&&a.paused===false){try{a.play();}catch(e){}}});
+  addLog('Mixer reset — all stems unmuted except Original','inf');
+}
 function toggleStemSolo(name){stems[name].solo=!stems[name].solo;updateStemRow(name);applyStemGains();}
 function updateStemRow(name){
   const s=stems[name];const row=document.querySelector(`.stem-row[data-name="${name}"]`);if(!row)return;
@@ -597,7 +604,13 @@ function applyStemGains(){
 }
 function startStems(offsetMs=0){
   const t=offsetMs/1000;
-  stemOrder.forEach(n=>{const a=stems[n].audio;try{a.currentTime=t;a.play();}catch(e){}});
+  stemOrder.forEach(n=>{
+    const s=stems[n];if(!s||!s.audio)return;
+    try{s.audio.currentTime=t;
+      const p=s.audio.play();
+      if(p&&p.catch)p.catch(err=>addLog(`stem ${n} play failed: ${err.message||err}`,'warn'));
+    }catch(e){addLog(`stem ${n} play threw: ${e.message}`,'warn');}
+  });
 }
 function stopStems(){
   stemOrder.forEach(n=>{const a=stems[n].audio;try{a.pause();a.currentTime=0;}catch(e){}});
