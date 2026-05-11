@@ -372,7 +372,7 @@ def status_transcribe(song_id: str):
 def _ensure_self_signed_cert():
     """Make a one-time self-signed cert in ./certs so HTTPS persists across
     server restarts (browser only has to accept the warning once)."""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
@@ -394,8 +394,8 @@ def _ensure_self_signed_cert():
         .subject_name(subject).issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.utcnow() - timedelta(days=1))
-        .not_valid_after(datetime.utcnow() + timedelta(days=365 * 10))
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365 * 10))
         .add_extension(x509.SubjectAlternativeName([
             x509.DNSName("localhost"),
             x509.IPAddress(__import__("ipaddress").IPv4Address("127.0.0.1")),
