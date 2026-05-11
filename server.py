@@ -369,8 +369,53 @@ def status_transcribe(song_id: str):
     return jsonify(job)
 
 
+def _ensure_self_signed_cert():
+    """Make a one-time self-signed cert in ./certs so HTTPS persists across
+    server restarts (browser only has to accept the warning once)."""
+    from datetime import datetime, timedelta
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    certs_dir = ROOT / "certs"
+    certs_dir.mkdir(exist_ok=True)
+    cert_path = certs_dir / "server.crt"
+    key_path = certs_dir / "server.key"
+    if cert_path.exists() and key_path.exists():
+        return cert_path, key_path
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "midistdio-local"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject).issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.utcnow() - timedelta(days=1))
+        .not_valid_after(datetime.utcnow() + timedelta(days=365 * 10))
+        .add_extension(x509.SubjectAlternativeName([
+            x509.DNSName("localhost"),
+            x509.IPAddress(__import__("ipaddress").IPv4Address("127.0.0.1")),
+        ]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+    return cert_path, key_path
+
+
 if __name__ == "__main__":
     import socket
+    import ssl
+    import threading
+
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -378,8 +423,23 @@ if __name__ == "__main__":
         s.close()
     except Exception:
         lan_ip = None
-    print(" * Open http://localhost:8000/ on this PC")
+
+    cert, key = _ensure_self_signed_cert()
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+
+    print(" * HTTP  http://localhost:8000/                (this PC, MIDI works on localhost)")
     if lan_ip:
-        print(f" * From another device on the same Wi-Fi: http://{lan_ip}:8000/")
-    app.run(host="0.0.0.0", port=8000, threaded=True, debug=False)
+        print(f" * HTTPS https://{lan_ip}:8443/   (use this from tablet — accept the cert warning)")
+        print(f"        ... or http://{lan_ip}:8000/  (no MIDI input on non-localhost HTTP)")
+
+    # Run HTTPS in a daemon thread; HTTP on the main thread.
+    threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=8443, threaded=True,
+                               debug=False, ssl_context=ssl_ctx,
+                               use_reloader=False),
+        daemon=True,
+    ).start()
+    app.run(host="0.0.0.0", port=8000, threaded=True, debug=False,
+            use_reloader=False)
 
